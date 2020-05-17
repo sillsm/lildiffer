@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"reflect"
 )
 
 // An Expr is a struct which implements Derive
@@ -213,6 +214,39 @@ func cycleTest() {
 
 }
 
+// Test table for Derive
+func testTable() {
+	table := []struct {
+		description string
+		function    Expression
+		derivative  Expression
+	}{
+		{"sin(6 * sin(x))",
+			Sin{Mul{Num{6.0}, Sin{Var{"x"}}}},
+			Mul{
+				Cos{Mul{Num{6.0}, Sin{Var{"x"}}}},
+				Mul{Num{6.0}, Cos{Var{"x"}}},
+			}},
+		{"x^4 + 3x^9",
+			Add{Pow{Var{"x"}, 4.},
+				Mul{Num{3.}, Pow{Var{"x"}, 9.}}},
+			Add{Mul{Num{4.}, Pow{Var{"x"}, 3.}},
+				Mul{Num{27.}, Pow{Var{"x"}, 8.}}},
+		},
+	}
+
+	for _, tt := range table {
+		d := Simplify(Simplify(Derive(tt.function)))
+		if !reflect.DeepEqual(d, tt.derivative) {
+			fmt.Printf("Error. Got %v, want %v \n", d, tt.derivative)
+			Read(d)
+			fmt.Printf("NEW\n")
+			Read(tt.derivative)
+			fmt.Printf("NEW\n")
+		}
+	}
+}
+
 func main() {
 	cycleTest()
 	a := Add{Sin{Var{"y"}}, Cos{Var{"x"}}}
@@ -221,26 +255,5 @@ func main() {
 	b := Derive(a)
 	Read(b)
 	fmt.Printf("\n")
-
-	t2 := Sin{Mul{Num{6.0}, Sin{Var{"x"}}}}
-	dt2 := Mul{
-		Cos{Mul{Num{6.0}, Sin{Var{"x"}}}},
-		Mul{Num{6.0}, Cos{Var{"x"}}},
-	}
-	Read(t2)
-	fmt.Println()
-	Read(dt2)
-	fmt.Println()
-	x := Derive(t2)
-	Read(x)
-	x = Derive(Mul{Num{6.}, Sin{Var{"x"}}})
-	fmt.Println()
-	Read(x)
-	fmt.Println("\n\npolynomial")
-	x = Add{Pow{Var{"x"}, 4.},
-		Mul{Num{3.}, Pow{Var{"x"}, 9.}}}
-	Read(x)
-	fmt.Println()
-	Read(Derive(x))
-
+	testTable()
 }
