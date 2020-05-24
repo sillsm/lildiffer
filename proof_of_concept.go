@@ -43,6 +43,74 @@ type Var struct {
 	Name string
 }
 
+// package internal struct for
+// marking subtrees constant
+type con struct {
+	E1 Expression
+}
+
+// mark all subtrees that don't involve
+// the variable as constant
+func markTreesConstant(va Var, e Expression) Expression {
+	checkCon := func(exp Expression) bool {
+		if _, ok := exp.(con); ok {
+			return true
+		}
+		return false
+	}
+	switch v := e.(type) {
+	case Num:
+		return con{v}
+	case Var:
+		if !reflect.DeepEqual(va, v) {
+			return con{v}
+		}
+		return v
+	case Cos:
+		c := markTreesConstant(va, v.E1)
+		if checkCon(c) {
+			return con{Cos{c}}
+		}
+		return Cos{c}
+	case Sin:
+		c := markTreesConstant(va, v.E1)
+		if checkCon(c) {
+			return con{Sin{c}}
+		}
+		return Sin{c}
+	case Pow:
+		return v
+	case Mul:
+		a := markTreesConstant(va, v.E1)
+		b := markTreesConstant(va, v.E2)
+		if checkCon(a) && checkCon(b) {
+			return con{Mul{a, b}}
+		}
+		return Mul{a, b}
+	case Add:
+		// if either summand not constant
+		// then add isn't constant
+		a := markTreesConstant(va, v.E1)
+		b := markTreesConstant(va, v.E2)
+		if checkCon(a) && checkCon(b) {
+			return con{Add{a, b}}
+		}
+		return Add{a, b}
+	default:
+		fmt.Printf("default")
+		return v
+	}
+}
+
+// Partial differentiation is normal
+// differentiation, but first you mark
+// all sub-expressions that don't involve
+// the variable you're differentiating
+// with respect to as constant
+func PartialDerive(va Var, e Expression) Expression {
+	return Derive(markTreesConstant(va, e))
+}
+
 // derivatives are recursive rewrite rules
 // for expression trees
 func Derive(e Expression) Expression {
@@ -60,7 +128,8 @@ func Derive(e Expression) Expression {
 			return Num{0.}
 		case Var:
 			return Num{1.}
-			// case
+		case con:
+			return Num{0.}
 		}
 		// panic("undefined derivative")
 		return exp
@@ -68,6 +137,8 @@ func Derive(e Expression) Expression {
 
 	// chain rule and product rule
 	switch v := e.(type) {
+	case con:
+		return derive(v)
 	case Num:
 		return derive(v)
 	case Var:
@@ -99,38 +170,30 @@ func Derive(e Expression) Expression {
 }
 
 // Prints expression for debugging
-func Read(e Expression) {
-	//
+func Read(e Expression) string {
 	e = Simplify(e)
 	switch v := e.(type) {
 	case Cos:
-		fmt.Printf("Cos(")
-		Read(v.E1)
-		fmt.Printf(")")
+		return fmt.Sprintf("Cos(%v)", Read(v.E1))
 	case Sin:
-		fmt.Printf("Sin(")
-		Read(v.E1)
-		fmt.Printf(")")
+		return fmt.Sprintf("Sin(%v)", Read(v.E1))
 	case Mul:
-		fmt.Printf("(")
-		Read(v.E1)
-		fmt.Printf("*")
-		Read(v.E2)
-		fmt.Printf(")")
+		return fmt.Sprintf("(%v*%v)",
+			Read(v.E1), Read(v.E2))
 	case Add:
-		fmt.Printf("(")
-		Read(v.E1)
-		fmt.Printf("+")
-		Read(v.E2)
-		fmt.Printf(")")
+		return fmt.Sprintf("(%v+%v)",
+			Read(v.E1), Read(v.E2))
 	case Pow:
-		Read(v.Base)
-		fmt.Printf("^%v", v.Exponent)
+		return fmt.Sprintf("%v^%v",
+			Read(v.Base), v.Exponent)
 	case Num:
-		fmt.Printf("%v", v.Val)
+		return fmt.Sprintf("%v", v.Val)
 	case Var:
-		fmt.Printf("%v", v.Name)
+		return fmt.Sprintf("%v", v.Name)
+	case con:
+		return fmt.Sprintf("CONST(%v)", Read(v.E1))
 	}
+	return ""
 }
 
 // Simplify cuts mult or add by 0
@@ -151,7 +214,9 @@ func Simplify(e Expression) Expression {
 
 	// Prune all children of mult 0
 	switch v := e.(type) {
-	//replace with general bfs logic
+	// Remove all constant expressions
+	case con:
+		return Simplify(v.E1)
 	case Cos:
 		return Cos{Simplify(v.E1)}
 	case Sin:
@@ -206,9 +271,8 @@ func cycleTest() {
 	fmt.Println("\nCycle Test")
 	var t Expression = Sin{Var{"x"}}
 	for i := 0; i < 7; i++ {
-		fmt.Println()
 		t = Simplify(t)
-		Read(t)
+		fmt.Printf("%v\n", Read(t))
 		t = Derive(t)
 	}
 
@@ -247,13 +311,56 @@ func testTable() {
 	}
 }
 
+// Test table for partial derive
+func testPartialDerive() {
+	table := []struct {
+		description string
+		variable    Var
+		function    Expression
+		derivative  Expression
+	}{
+		{"a * sin(5+b))",
+			Var{"a"},
+			Mul{Var{"a"}, Sin{Add{Num{5.}, Var{"b"}}}},
+			Sin{Add{Num{5.}, Var{"b"}}},
+		},
+		{"a * sin(5+b))",
+			Var{"b"},
+			Mul{Var{"a"}, Sin{Add{Num{5.}, Var{"b"}}}},
+			Mul{Var{"a"}, Cos{Add{Num{5.}, Var{"b"}}}},
+		},
+		{"sin(x * sin(5+y))",
+			Var{"x"},
+			Sin{Mul{Var{"x"}, Sin{Add{Num{5.}, Var{"y"}}}}},
+			Mul{
+				Cos{Mul{Var{"x"}, Sin{Add{Num{5.}, Var{"y"}}}}},
+				Sin{Add{Num{5.}, Var{"y"}}},
+			},
+		},
+	}
+
+	for _, tt := range table {
+		p := PartialDerive(tt.variable, tt.function)
+		d := Simplify(Simplify(p))
+
+		if !reflect.DeepEqual(d, tt.derivative) {
+			fmt.Printf("\nPartialDerive Error %v wrt %v\n",
+				tt.description, tt.variable)
+			fmt.Printf("got  %v\nwant %v\n",
+				Read(d),
+				Read(tt.derivative),
+			)
+		}
+	}
+}
+
 func main() {
 	cycleTest()
 	a := Add{Sin{Var{"y"}}, Cos{Var{"x"}}}
 	Read(a)
-	fmt.Println()
 	b := Derive(a)
 	Read(b)
 	fmt.Printf("\n")
 	testTable()
+	testPartialDerive()
 }
