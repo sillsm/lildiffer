@@ -1,9 +1,9 @@
 //go 1.10.4
-
 package main
 
 import (
 	"fmt"
+	"math"
 	"reflect"
 )
 
@@ -27,11 +27,15 @@ type Pow struct {
 	Exponent float64
 }
 
+type Add struct {
+	E1, E2 Expression
+}
+
 type Mul struct {
 	E1, E2 Expression
 }
 
-type Add struct {
+type Div struct {
 	E1, E2 Expression
 }
 
@@ -47,6 +51,168 @@ type Var struct {
 // marking subtrees constant
 type con struct {
 	E1 Expression
+}
+
+// Converts expression to a string
+func Read(e Expression) string {
+	e = Simplify(e)
+	switch v := e.(type) {
+	case Cos:
+		return fmt.Sprintf("Cos(%v)", Read(v.E1))
+	case Sin:
+		return fmt.Sprintf("Sin(%v)", Read(v.E1))
+	case Mul:
+		return fmt.Sprintf("(%v*%v)",
+			Read(v.E1), Read(v.E2))
+	case Add:
+		return fmt.Sprintf("(%v+%v)",
+			Read(v.E1), Read(v.E2))
+	case Pow:
+		return fmt.Sprintf("%v^%v",
+			Read(v.Base), v.Exponent)
+	case Num:
+		return fmt.Sprintf("%v", v.Val)
+	case Var:
+		return fmt.Sprintf("%v", v.Name)
+	case con:
+		return fmt.Sprintf("CONST(%v)", Read(v.E1))
+	}
+	return ""
+}
+
+// Simplify expressions
+// Cleans up chains of Muls and Adds,
+// Remove con nodes.
+func Simplify(e Expression) Expression {
+	// recursive descent
+	var a, b Expression
+	switch v := e.(type) {
+	case con:
+		// don't do further processing
+		// just strip constant symbols
+		return Simplify(v.E1)
+	case Cos:
+		return Cos{Simplify(v.E1)}
+	case Sin:
+		return Sin{Simplify(v.E1)}
+	case Pow:
+		return Pow{Simplify(v.Base), v.Exponent}
+	case Mul:
+		a = Simplify(v.E1)
+		b = Simplify(v.E2)
+		e = Mul{a, b}
+	case Add:
+		a = Simplify(v.E1)
+		b = Simplify(v.E2)
+		e = Add{a, b}
+	}
+
+	// Clean up chains of Adds
+	if _, ok := e.(Add); ok {
+		var toCheck []Expression
+		// check left branch
+		switch v := a.(type) {
+		case Add:
+			toCheck = append(toCheck, v.E1)
+			toCheck = append(toCheck, v.E2)
+		default:
+			toCheck = append(toCheck, a)
+		}
+		// check right branch
+		switch v := b.(type) {
+		case Add:
+			toCheck = append(toCheck, v.E1)
+			toCheck = append(toCheck, v.E2)
+		default:
+			toCheck = append(toCheck, b)
+		}
+
+		// Start Summing
+		sum := 0.0
+		var sumlist []Expression
+		for _, elt := range toCheck {
+			if n, ok := elt.(Num); ok {
+				sum += n.Val
+				continue
+			}
+			sumlist = append(sumlist, elt)
+		}
+
+		switch {
+		case almostEqual(sum, 0):
+			// pass
+			if len(sumlist) == 0 {
+				return Num{0.}
+			}
+		default:
+			sumlist = append([]Expression{Num{sum}}, sumlist...)
+		}
+		//debug
+
+		//readjust summands
+		// z is the end of the list
+		z := sumlist[len(sumlist)-1]
+		for i := len(sumlist) - 2; i >= 0; i-- {
+			z = Add{sumlist[i], z}
+		}
+		return z
+
+	}
+
+	// Clean up chains of Muls
+	// if it's a mul, collect branches
+	if _, ok := e.(Mul); ok {
+		var toCheck []Expression
+		// check left branch
+		switch v := a.(type) {
+		case Mul:
+			toCheck = append(toCheck, v.E1)
+			toCheck = append(toCheck, v.E2)
+		case con:
+			panic("left con")
+		default:
+			toCheck = append(toCheck, a)
+		}
+		// check right branch
+		switch v := b.(type) {
+		case Mul:
+			toCheck = append(toCheck, v.E1)
+			toCheck = append(toCheck, v.E2)
+		case con:
+			panic("right con")
+		default:
+			toCheck = append(toCheck, b)
+		}
+
+		// multiply actual numbers
+		// put coefficient on leftmost bramch
+		co := 1.0
+		var mlist []Expression
+		for _, elt := range toCheck {
+			if n, ok := elt.(Num); ok {
+				co *= n.Val
+				continue
+			}
+			mlist = append(mlist, elt)
+		}
+
+		switch {
+		case almostEqual(co, 1.0):
+		case almostEqual(co, 0.0):
+			mlist = []Expression{Num{0.}}
+		default:
+			mlist = append([]Expression{Num{co}}, mlist...)
+		}
+
+		//readjust multiplicands
+		z := mlist[len(mlist)-1]
+		for i := len(mlist) - 2; i >= 0; i-- {
+			z = Mul{mlist[i], z}
+		}
+		return z
+	}
+
+	return e
 }
 
 // mark all subtrees that don't involve
@@ -79,7 +245,11 @@ func markTreesConstant(va Var, e Expression) Expression {
 		}
 		return Sin{c}
 	case Pow:
-		return v
+		c := markTreesConstant(va, v.Base)
+		if checkCon(c) {
+			return con{Pow{c, v.Exponent}}
+		}
+		return Pow{c, v.Exponent}
 	case Mul:
 		a := markTreesConstant(va, v.E1)
 		b := markTreesConstant(va, v.E2)
@@ -169,117 +339,54 @@ func Derive(e Expression) Expression {
 	panic("missed a case")
 }
 
-// Prints expression for debugging
-func Read(e Expression) string {
-	e = Simplify(e)
-	switch v := e.(type) {
-	case Cos:
-		return fmt.Sprintf("Cos(%v)", Read(v.E1))
-	case Sin:
-		return fmt.Sprintf("Sin(%v)", Read(v.E1))
-	case Mul:
-		return fmt.Sprintf("(%v*%v)",
-			Read(v.E1), Read(v.E2))
-	case Add:
-		return fmt.Sprintf("(%v+%v)",
-			Read(v.E1), Read(v.E2))
-	case Pow:
-		return fmt.Sprintf("%v^%v",
-			Read(v.Base), v.Exponent)
-	case Num:
-		return fmt.Sprintf("%v", v.Val)
-	case Var:
-		return fmt.Sprintf("%v", v.Name)
-	case con:
-		return fmt.Sprintf("CONST(%v)", Read(v.E1))
-	}
-	return ""
+func almostEqual(a, b float64) bool {
+	return math.Abs(a-b) < .00000001
 }
 
-// Simplify cuts mult or add by 0
-// from expression trees
-func Simplify(e Expression) Expression {
-	// checks if e is a num that's roughly
-	// equal to f
-	checkFloat := func(f float64, e Expression) bool {
-		sensitivity := .0000000000001
-		if t, ok := e.(Num); ok {
-			if t.Val > f-sensitivity &&
-				t.Val < f+sensitivity {
-				return true
-			}
-		}
-		return false
+func main() {
+	if !cycleTest() {
+		fmt.Println("Cycle tests passed without error.")
 	}
-
-	// Prune all children of mult 0
-	switch v := e.(type) {
-	// Remove all constant expressions
-	case con:
-		return Simplify(v.E1)
-	case Cos:
-		return Cos{Simplify(v.E1)}
-	case Sin:
-		return Sin{Simplify(v.E1)}
-	case Mul:
-		if checkFloat(0., v.E1) {
-			return Num{0.}
-		}
-		if checkFloat(0., v.E2) {
-			return Num{0.}
-		}
-		if checkFloat(1., v.E2) {
-			return v.E1
-		}
-		if checkFloat(1., v.E1) {
-			return v.E2
-		}
-		if t1, ok1 := v.E1.(Num); ok1 {
-			if t2, ok2 := v.E2.(Mul); ok2 {
-				if t3, ok3 := t2.E1.(Num); ok3 {
-					return Mul{
-						Num{t1.Val * t3.Val},
-						Simplify(t2.E2),
-					}
-				}
-			}
-		}
-
-		return Mul{
-			Simplify(v.E1),
-			Simplify(v.E2),
-		}
-	case Add:
-		if checkFloat(0., v.E1) {
-			return Simplify(v.E2)
-		}
-		if checkFloat(0., v.E2) {
-			return Simplify(v.E1)
-		}
-
-		return Add{
-			Simplify(v.E1),
-			Simplify(v.E2),
-		}
-
-	default:
-		return v
+	if !testDerive() {
+		fmt.Println("Derive tests passed without error.")
+	}
+	if !testPartialDerive() {
+		fmt.Println("Partial Derivative tests passed without error.")
+	}
+	if !testSimplify() {
+		fmt.Println("Simplify tests passed without error.")
 	}
 }
 
-func cycleTest() {
-	fmt.Println("\nCycle Test")
+/*
+* TESTS
+* To be moved to test file post-prototype
+ */
+
+func cycleTest() bool {
 	var t Expression = Sin{Var{"x"}}
-	for i := 0; i < 7; i++ {
-		t = Simplify(t)
-		fmt.Printf("%v\n", Read(t))
+	table := []string{
+		"Sin(x)",
+		"Cos(x)",
+		"(-1*Sin(x))",
+		"(-1*Cos(x))",
+		"Sin(x)",
+		"Cos(x)",
+		"(-1*Sin(x))",
+	}
+	failure := false
+	for _, elt := range table {
+		if Read(t) != elt {
+			fmt.Printf("Trig cycle test failure. Want %v, got %v", elt, Read(t))
+			failure = true
+		}
 		t = Derive(t)
 	}
-
+	return failure
 }
 
-// Test table for Derive
-func testTable() {
+// Test Derive
+func testDerive() bool {
 	table := []struct {
 		description string
 		function    Expression
@@ -288,9 +395,14 @@ func testTable() {
 		{"sin(6 * sin(x))",
 			Sin{Mul{Num{6.0}, Sin{Var{"x"}}}},
 			Mul{
-				Cos{Mul{Num{6.0}, Sin{Var{"x"}}}},
-				Mul{Num{6.0}, Cos{Var{"x"}}},
-			}},
+				Num{6.0},
+				Mul{
+					Cos{Mul{Num{6.0}, Sin{Var{"x"}}}},
+					Cos{Var{"x"}},
+				},
+			},
+		},
+
 		{"x^4 + 3x^9",
 			Add{Pow{Var{"x"}, 4.},
 				Mul{Num{3.}, Pow{Var{"x"}, 9.}}},
@@ -298,21 +410,20 @@ func testTable() {
 				Mul{Num{27.}, Pow{Var{"x"}, 8.}}},
 		},
 	}
-
+	failure := false
 	for _, tt := range table {
-		d := Simplify(Simplify(Derive(tt.function)))
+		raw := Derive(tt.function)
+		d := Simplify(raw) // test it simplified
 		if !reflect.DeepEqual(d, tt.derivative) {
-			fmt.Printf("Error. Got %v, want %v \n", d, tt.derivative)
-			Read(d)
-			fmt.Printf("NEW\n")
-			Read(tt.derivative)
-			fmt.Printf("NEW\n")
+			fmt.Printf("Error. Raw:\n %v\n Got:\n %v, want:\n %v \n", Read(raw), Read(d), Read(tt.derivative))
+			failure = true
 		}
 	}
+	return failure
 }
 
 // Test table for partial derive
-func testPartialDerive() {
+func testPartialDerive() bool {
 	table := []struct {
 		description string
 		variable    Var
@@ -337,30 +448,83 @@ func testPartialDerive() {
 				Sin{Add{Num{5.}, Var{"y"}}},
 			},
 		},
+		{"sin(x*y)",
+			Var{"x"},
+			Sin{Mul{Var{"x"}, Var{"y"}}},
+			Mul{
+				Cos{Mul{Var{"x"}, Var{"y"}}},
+				Var{"y"},
+			},
+		},
+		{"5*cos(y *x)^3",
+			Var{"x"},
+			Mul{Num{5.0}, Pow{Cos{Mul{Var{"x"}, Var{"y"}}}, 3.}},
+			Mul{
+				Num{-15.},
+				Mul{
+					Pow{Cos{Mul{Var{"x"}, Var{"y"}}}, 2.},
+					Mul{Sin{Mul{Var{"x"}, Var{"y"}}}, Var{"y"}},
+				},
+			},
+		},
 	}
-
+	failure := false
 	for _, tt := range table {
-		p := PartialDerive(tt.variable, tt.function)
-		d := Simplify(Simplify(p))
+		raw := PartialDerive(tt.variable, tt.function)
+		d := Simplify(raw)
 
 		if !reflect.DeepEqual(d, tt.derivative) {
 			fmt.Printf("\nPartialDerive Error %v wrt %v\n",
 				tt.description, tt.variable)
+			fmt.Printf("\nPresimplified output: %v\n",
+				Read(raw))
 			fmt.Printf("got  %v\nwant %v\n",
 				Read(d),
 				Read(tt.derivative),
 			)
+			failure = true
 		}
 	}
+	return failure
 }
 
-func main() {
-	cycleTest()
-	a := Add{Sin{Var{"y"}}, Cos{Var{"x"}}}
-	Read(a)
-	b := Derive(a)
-	Read(b)
-	fmt.Printf("\n")
-	testTable()
-	testPartialDerive()
+func testSimplify() bool {
+	table := []struct {
+		description string
+		f           Expression
+		simplified  Expression
+	}{
+		{"5*((3*z)*(y*-1))",
+			Mul{Num{5.}, Mul{Mul{Num{3.}, Var{"z"}}, Mul{Var{"y"}, Num{-1.}}}},
+			Mul{Num{-15.}, Mul{Var{"z"}, Var{"y"}}},
+		},
+		{"5+ (6*cos(x) * 0)",
+			Add{Num{5.}, Mul{Num{6.}, Mul{Cos{Var{"x"}}, Num{0.}}}},
+			Num{5.},
+		},
+		{"con(c + 2)",
+			con{Add{Var{"c"}, Num{2.}}},
+			Add{Num{2.}, Var{"c"}},
+		},
+		{"Cos (x * con(y))",
+			Cos{Mul{Var{"x"}, con{Var{"y"}}}},
+			Cos{Mul{Var{"x"}, Var{"y"}}},
+		},
+		{"((3*-1)*(100*10))",
+			Mul{Mul{Num{3.}, Num{-1.}}, Mul{Num{100.}, Num{10.}}},
+			Num{-3000.},
+		},
+	}
+	failure := false
+	for _, tt := range table {
+		if got := Simplify(tt.f); !reflect.DeepEqual(got, tt.simplified) {
+			fmt.Printf("\nSimplify Error %v\n", tt.description)
+			fmt.Printf("got  %v\nwant %v\n",
+				Read(got),
+				Read(tt.simplified),
+			)
+			failure = true
+		}
+	}
+	return failure
 }
