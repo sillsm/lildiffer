@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"regexp"
+	"sort"
+	"strconv"
 )
 
 // An Expr is a struct which implements Derive
@@ -53,6 +56,119 @@ type con struct {
 	E1 Expression
 }
 
+// polynomial type
+type Poly struct {
+	//terms and coefficients map
+	terms map[string]float64
+}
+
+// Simplify monomial products
+// e.g xxy^2zx - > x^3y^2z
+func reduce(s string) string {
+	if len(s) == 0 {
+		return ""
+	}
+
+	var monomials []string
+	var exponents []int
+
+	re := regexp.MustCompile(`[a-z]\^[0-9\-]+`)
+
+	// Pack monomials and exponents with the single cases
+	for _, r := range re.ReplaceAllString(s, "") {
+		monomials = append(monomials, string(r))
+		exponents = append(exponents, 1)
+	}
+
+	// Parse and pack the monomials with non-1 exponents
+	for _, str := range re.FindAllString(s, -1) {
+		monomials = append(monomials, string(str[0]))
+		i, err := strconv.Atoi(str[2:])
+		if err != nil {
+			panic(err)
+		}
+		exponents = append(exponents, i)
+	}
+
+	// Now get rid of repeats, multiply
+	m := make(map[string]int)
+	for i, st := range monomials {
+		if val, ok := m[st]; ok {
+			m[st] = val + exponents[i]
+		} else {
+			m[st] = exponents[i]
+		}
+	}
+
+	// Make reduced term
+	var ret string
+	var sorted []string
+	for key := range m {
+		sorted = append(sorted, key)
+	}
+	sort.Strings(sorted)
+	for _, key := range sorted {
+		v := m[key]
+		switch v {
+		case 1:
+			ret += key
+		default:
+			ret += fmt.Sprintf("%v^%v", key, v)
+		}
+	}
+	return ret
+}
+
+func newPoly(m map[string]float64) Poly {
+	r := make(map[string]float64)
+	for key, value := range m {
+		key = reduce(key)
+		if _, ok := r[key]; ok {
+			panic("polynomial init error")
+		}
+		r[key] = value
+	}
+	return Poly{r}
+}
+
+func almostEqual(a, b float64) bool {
+	return math.Abs(a-b) < .0000000001
+}
+
+func mul(p1, p2 Poly) Poly {
+	r := make(map[string]float64)
+	for k1, v1 := range p1.terms {
+		for k2, v2 := range p2.terms {
+			key := reduce(k1 + k2)
+			if val, ok := r[key]; ok {
+				r[key] = val + v1*v2
+			} else {
+				r[key] = v1 * v2
+			}
+			if v := r[key]; almostEqual(v, 0.) {
+				delete(r, key)
+			}
+		}
+	}
+	return Poly{r}
+}
+
+// combine like terms
+func add(p1, p2 Poly) Poly {
+	for key, value := range p1.terms {
+		if _, ok := p2.terms[key]; ok {
+			//there's a like term
+			p2.terms[key] = p2.terms[key] + value
+		} else {
+			p2.terms[key] = value
+		}
+		if v := p2.terms[key]; almostEqual(v, 0.) {
+			delete(p2.terms, key)
+		}
+	}
+	return p2
+}
+
 // Converts expression to a string
 func Read(e Expression) string {
 	e = Simplify(e)
@@ -63,6 +179,9 @@ func Read(e Expression) string {
 		return fmt.Sprintf("Sin(%v)", Read(v.E1))
 	case Mul:
 		return fmt.Sprintf("(%v*%v)",
+			Read(v.E1), Read(v.E2))
+	case Div:
+		return fmt.Sprintf("(%v/%v)",
 			Read(v.E1), Read(v.E2))
 	case Add:
 		return fmt.Sprintf("(%v+%v)",
@@ -76,34 +195,103 @@ func Read(e Expression) string {
 		return fmt.Sprintf("%v", v.Name)
 	case con:
 		return fmt.Sprintf("CONST(%v)", Read(v.E1))
+	case Poly:
+		return fmt.Sprintf("P{%v}", v.terms)
 	}
 	return ""
+}
+
+// Bunch of techniques to simplify expression trees.
+func Simplify(e Expression) Expression {
+	return simplify(e)
+}
+
+// makePoly attempts to rearrange expression terms as polynomials
+func makePoly(e Expression) Expression {
+	// Given an expression, try making a poly out of it
+	tryPoly := func(e Expression) Expression {
+		switch v := e.(type) {
+		case Var:
+			return newPoly(map[string]float64{v.Name: 1.})
+		case Num:
+			return newPoly(map[string]float64{"": v.Val})
+		}
+		return e
+	}
+	tryPoly = tryPoly
+
+	var a, b Expression
+	switch v := e.(type) {
+	case con:
+		// don't do further processing
+		// just strip constant symbols
+		return makePoly(v.E1)
+	case Cos:
+		return Cos{makePoly(v.E1)}
+	case Sin:
+		return Sin{makePoly(v.E1)}
+	case Pow:
+		return Pow{makePoly(v.Base), v.Exponent}
+	case Div:
+		return Div{makePoly(v.E1), makePoly(v.E2)}
+	case Num:
+		return tryPoly(v)
+	case Var:
+		return tryPoly(v)
+	case Poly:
+		return v
+	case Mul:
+		a = tryPoly(makePoly(v.E1))
+		b = tryPoly(makePoly(v.E2))
+	case Add:
+		a = tryPoly(makePoly(v.E1))
+		b = tryPoly(makePoly(v.E2))
+	}
+
+	_, ok1 := a.(Poly)
+	_, ok2 := b.(Poly)
+
+	switch e.(type) {
+	case Mul:
+		if ok1 && ok2 {
+			return mul(a.(Poly), b.(Poly))
+		}
+	case Add:
+		if ok1 && ok2 {
+			return add(a.(Poly), b.(Poly))
+		}
+
+	}
+
+	return e
 }
 
 // Simplify expressions
 // Cleans up chains of Muls and Adds,
 // Remove con nodes.
-func Simplify(e Expression) Expression {
+func simplify(e Expression) Expression {
 	// recursive descent
 	var a, b Expression
 	switch v := e.(type) {
 	case con:
 		// don't do further processing
 		// just strip constant symbols
-		return Simplify(v.E1)
+		return simplify(v.E1)
 	case Cos:
-		return Cos{Simplify(v.E1)}
+		return Cos{simplify(v.E1)}
 	case Sin:
-		return Sin{Simplify(v.E1)}
+		return Sin{simplify(v.E1)}
 	case Pow:
-		return Pow{Simplify(v.Base), v.Exponent}
+		return Pow{simplify(v.Base), v.Exponent}
+	case Div:
+		return Div{simplify(v.E1), simplify(v.E2)}
 	case Mul:
-		a = Simplify(v.E1)
-		b = Simplify(v.E2)
+		a = simplify(v.E1)
+		b = simplify(v.E2)
 		e = Mul{a, b}
 	case Add:
-		a = Simplify(v.E1)
-		b = Simplify(v.E2)
+		a = simplify(v.E1)
+		b = simplify(v.E2)
 		e = Add{a, b}
 	}
 
@@ -209,9 +397,22 @@ func Simplify(e Expression) Expression {
 		for i := len(mlist) - 2; i >= 0; i-- {
 			z = Mul{mlist[i], z}
 		}
+		// Attempt distributing a coefficient over a sum
+		// Turn Mul{num, Add} into Add {num*add.v1,num*add.v2}
+
+		switch v := z.(type) {
+		case Mul:
+			switch sum := v.E2.(type) {
+			case Add:
+				return simplify(Add{
+					Mul{v.E1, sum.E1},
+					Mul{v.E1, sum.E2},
+				})
+			}
+		}
+
 		return z
 	}
-
 	return e
 }
 
@@ -257,6 +458,13 @@ func markTreesConstant(va Var, e Expression) Expression {
 			return con{Mul{a, b}}
 		}
 		return Mul{a, b}
+	case Div:
+		a := markTreesConstant(va, v.E1)
+		b := markTreesConstant(va, v.E2)
+		if checkCon(a) && checkCon(b) {
+			return con{Div{a, b}}
+		}
+		return Div{a, b}
 	case Add:
 		// if either summand not constant
 		// then add isn't constant
@@ -298,6 +506,7 @@ func Derive(e Expression) Expression {
 			return Num{0.}
 		case Var:
 			return Num{1.}
+			// subtrees marked constant automatically have 0 as their derivative
 		case con:
 			return Num{0.}
 		}
@@ -305,7 +514,7 @@ func Derive(e Expression) Expression {
 		return exp
 	}
 
-	// chain rule and product rule
+	// chain rule, product rule, quotient rule
 	switch v := e.(type) {
 	case con:
 		return derive(v)
@@ -330,20 +539,28 @@ func Derive(e Expression) Expression {
 				v.E2,
 			},
 		}
+	// quotient rule
+	case Div:
+		return Div{
+			Add{Mul{Derive(v.E1), v.E2}, Mul{Num{-1.}, Mul{v.E1, Derive(v.E2)}}},
+			Mul{v.E2, v.E2},
+		}
 	case Add:
 		return Add{
 			Derive(v.E1),
 			Derive(v.E2),
 		}
 	}
-	panic("missed a case")
+	fmt.Printf("Why did I get here? %v\n", e)
+	panic(fmt.Sprintf("missed a case of type %v", Read(e)))
 }
 
-func almostEqual(a, b float64) bool {
-	return math.Abs(a-b) < .00000001
+func g(Expression) (Expression, Expression) {
+	return Var{"a"}, Var{"b"}
 }
 
 func main() {
+
 	if !cycleTest() {
 		fmt.Println("Cycle tests passed without error.")
 	}
@@ -355,6 +572,12 @@ func main() {
 	}
 	if !testSimplify() {
 		fmt.Println("Simplify tests passed without error.")
+	}
+	if !polyMulTest() {
+		fmt.Println("Polynomial multiplication tests passed without error.")
+	}
+	if !polyAddTest() {
+		fmt.Println("Polynomial addition tests passed without error.")
 	}
 }
 
@@ -387,6 +610,7 @@ func cycleTest() bool {
 
 // Test Derive
 func testDerive() bool {
+	type ptype map[string]float64
 	table := []struct {
 		description string
 		function    Expression
@@ -402,20 +626,26 @@ func testDerive() bool {
 				},
 			},
 		},
-
 		{"x^4 + 3x^9",
 			Add{Pow{Var{"x"}, 4.},
 				Mul{Num{3.}, Pow{Var{"x"}, 9.}}},
 			Add{Mul{Num{4.}, Pow{Var{"x"}, 3.}},
 				Mul{Num{27.}, Pow{Var{"x"}, 8.}}},
 		},
+		// https://tutorial.math.lamar.edu/classes/calci/productquotientrule.aspx
+		{"(3z+9) / (2-z)",
+			Div{Add{Mul{Num{3.0}, Var{"z"}}, Num{9.}},
+				Add{Num{2.}, Mul{Num{-1.}, Var{"z"}}}},
+			Div{newPoly(ptype{"": 15.}),
+				newPoly(ptype{"": 4., "z^2": 1, "z": -4.})},
+		},
 	}
 	failure := false
 	for _, tt := range table {
 		raw := Derive(tt.function)
-		d := Simplify(raw) // test it simplified
+		d := makePoly(Simplify(raw)) // test it simplified
 		if !reflect.DeepEqual(d, tt.derivative) {
-			fmt.Printf("Error. Raw:\n %v\n Got:\n %v, want:\n %v \n", Read(raw), Read(d), Read(tt.derivative))
+			fmt.Printf("TestDerive Error. Raw:\n %v\n Got:\n %v, want:\n %v \n", Read(raw), Read(d), Read(tt.derivative))
 			failure = true
 		}
 	}
@@ -424,6 +654,7 @@ func testDerive() bool {
 
 // Test table for partial derive
 func testPartialDerive() bool {
+	type ptype map[string]float64
 	table := []struct {
 		description string
 		variable    Var
@@ -433,7 +664,7 @@ func testPartialDerive() bool {
 		{"a * sin(5+b))",
 			Var{"a"},
 			Mul{Var{"a"}, Sin{Add{Num{5.}, Var{"b"}}}},
-			Sin{Add{Num{5.}, Var{"b"}}},
+			Sin{newPoly(ptype{"": 5., "b": 1})},
 		},
 		{"a * sin(5+b))",
 			Var{"b"},
@@ -471,7 +702,7 @@ func testPartialDerive() bool {
 	failure := false
 	for _, tt := range table {
 		raw := PartialDerive(tt.variable, tt.function)
-		d := Simplify(raw)
+		d := makePoly(Simplify(raw))
 
 		if !reflect.DeepEqual(d, tt.derivative) {
 			fmt.Printf("\nPartialDerive Error %v wrt %v\n",
@@ -489,6 +720,7 @@ func testPartialDerive() bool {
 }
 
 func testSimplify() bool {
+	type ptype map[string]float64
 	table := []struct {
 		description string
 		f           Expression
@@ -496,28 +728,41 @@ func testSimplify() bool {
 	}{
 		{"5*((3*z)*(y*-1))",
 			Mul{Num{5.}, Mul{Mul{Num{3.}, Var{"z"}}, Mul{Var{"y"}, Num{-1.}}}},
-			Mul{Num{-15.}, Mul{Var{"z"}, Var{"y"}}},
+			newPoly(ptype{"yz": -15}),
 		},
 		{"5+ (6*cos(x) * 0)",
 			Add{Num{5.}, Mul{Num{6.}, Mul{Cos{Var{"x"}}, Num{0.}}}},
-			Num{5.},
+			newPoly(ptype{"": 5.}),
 		},
 		{"con(c + 2)",
 			con{Add{Var{"c"}, Num{2.}}},
-			Add{Num{2.}, Var{"c"}},
+			newPoly(ptype{"": 2., "c": 1}),
 		},
+		{"9 + (3 x (2+ z))",
+			Add{Num{9.}, Mul{Num{3.}, Add{Num{2.}, Var{"z"}}}},
+			newPoly(ptype{"": 15, "z": 3}),
+		},
+		{"-1 * ((2+ (-1 * z)) * z)",
+			Mul{Num{-1.}, Mul{Add{Num{2.0}, Mul{Num{-1.}, Var{"z"}}}, Var{"z"}}},
+			newPoly(ptype{"z^2": 1, "z": -2}),
+		},
+		{"4.5 * (2 + y)",
+			Mul{Num{4.5}, Add{Num{2.}, Var{"y"}}},
+			newPoly(ptype{"y": 4.5, "": 9}),
+		},
+
 		{"Cos (x * con(y))",
 			Cos{Mul{Var{"x"}, con{Var{"y"}}}},
-			Cos{Mul{Var{"x"}, Var{"y"}}},
+			Cos{newPoly(ptype{"xy": 1})},
 		},
 		{"((3*-1)*(100*10))",
 			Mul{Mul{Num{3.}, Num{-1.}}, Mul{Num{100.}, Num{10.}}},
-			Num{-3000.},
+			newPoly(ptype{"": -3000}),
 		},
 	}
 	failure := false
 	for _, tt := range table {
-		if got := Simplify(tt.f); !reflect.DeepEqual(got, tt.simplified) {
+		if got := makePoly(Simplify(tt.f)); !reflect.DeepEqual(got, tt.simplified) {
 			fmt.Printf("\nSimplify Error %v\n", tt.description)
 			fmt.Printf("got  %v\nwant %v\n",
 				Read(got),
@@ -525,6 +770,95 @@ func testSimplify() bool {
 			)
 			failure = true
 		}
+	}
+	return failure
+}
+
+/*
+* Polynomial TESTS
+*
+ */
+func polyAddTest() bool {
+	type ptype map[string]float64
+	table := []struct {
+		p1, p2 map[string]float64
+		sum    map[string]float64
+	}{
+		{
+			ptype{"": 4., "x^2y^5": 3.5, "x": 2.},
+			ptype{"x": 1.},
+			ptype{"": 4, "x": 3., "x^2y^5": 3.5},
+		},
+
+		{
+			ptype{"x^2y^111z^3": 1},
+			ptype{"y^2nmz^2": 1},
+			ptype{"x^2y^111z^3": 1, "y^2nmz^2": 1},
+		},
+		{
+			ptype{"": 1, "x": 1},
+			ptype{"": 1, "x": -1},
+			ptype{"": 2},
+		},
+		{
+			ptype{"": 1, "x": 1, "y": 1},
+			ptype{"": -1, "x": 1, "y": -1},
+			ptype{"x": 2},
+		},
+	}
+	failure := false
+	for _, t := range table {
+		got := add(newPoly(t.p1), newPoly(t.p2))
+		want := newPoly(t.sum)
+		if !reflect.DeepEqual(got, want) {
+			fmt.Printf(
+				"Poly add Error on \n%v * %v\n want \n%v got \n%v\n\n",
+				t.p1, t.p2, want, got)
+			failure = true
+		}
+
+	}
+	return failure
+}
+
+func polyMulTest() bool {
+	type ptype map[string]float64
+	table := []struct {
+		p1, p2  map[string]float64
+		product map[string]float64
+	}{
+		{
+			ptype{"": 4., "x^2y^5": 3.5, "x": 2.},
+			ptype{"x": 1.},
+			ptype{"x": 4., "x^3y^5": 3.5, "x^2": 2.},
+		},
+		{
+			ptype{"x^2y^111z^3": 1},
+			ptype{"y^2nmz^2": 1},
+			ptype{"mnx^2y^113z^5": 1},
+		},
+		{
+			ptype{"": 1, "x": 1},
+			ptype{"": 1, "x": -1},
+			ptype{"": 1, "x^2": -1},
+		},
+		{
+			ptype{"": 1, "x": 1, "y": 1},
+			ptype{"": -1, "x": 1, "y": -1},
+			ptype{"": -1, "x^2": 1, "y^2": -1, "y": -2.},
+		},
+	}
+	failure := false
+	for _, t := range table {
+		got := mul(newPoly(t.p1), newPoly(t.p2))
+		want := newPoly(t.product)
+		if !reflect.DeepEqual(got, want) {
+			fmt.Printf(
+				"Poly Mul Error on \n%v * %v\n want \n%v got \n%v\n\n",
+				t.p1, t.p2, want, got)
+			failure = true
+		}
+
 	}
 	return failure
 }
