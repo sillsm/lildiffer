@@ -195,7 +195,7 @@ func TestPolyAdd(t *testing.T) {
 	table := []struct {
 		p1, p2 map[string]float64
 		sum    map[string]float64
-
+        }{
 		{
 			ptype{"": 4., "x^2y^5": 3.5, "x": 2.},
 			ptype{"x": 1.},
