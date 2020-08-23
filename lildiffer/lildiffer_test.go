@@ -1,9 +1,9 @@
 package lildiffer
 
 import (
-  "testing"
-  "reflect"
-  "fmt"
+	"fmt"
+	"reflect"
+	"testing"
 )
 
 // Ensure cyclic property of repeated derivatives
@@ -28,7 +28,7 @@ func TestCyclesBehavior(t *testing.T) {
 }
 
 // Test Derive
-func TestDerive(t *testing.T){
+func TestDerive(t *testing.T) {
 	type ptype map[string]float64
 	table := []struct {
 		description string
@@ -84,21 +84,22 @@ func TestPartialDerive(t *testing.T) {
 		{"a * sin(5+b))",
 			Var{"b"},
 			Mul{Var{"a"}, Sin{Add{Num{5.}, Var{"b"}}}},
-			Mul{Var{"a"}, Cos{Add{Num{5.}, Var{"b"}}}},
+			Mul{Var{"a"}, Cos{newPoly(ptype{"": 5., "b": 1})}},
 		},
 		{"sin(x * sin(5+y))",
 			Var{"x"},
 			Sin{Mul{Var{"x"}, Sin{Add{Num{5.}, Var{"y"}}}}},
 			Mul{
-				Cos{Mul{Var{"x"}, Sin{Add{Num{5.}, Var{"y"}}}}},
-				Sin{Add{Num{5.}, Var{"y"}}},
+				Cos{Mul{Var{"x"},
+					Sin{newPoly(ptype{"": 5., "y": 1})}}},
+				Sin{newPoly(ptype{"": 5., "y": 1})},
 			},
 		},
 		{"sin(x*y)",
 			Var{"x"},
 			Sin{Mul{Var{"x"}, Var{"y"}}},
 			Mul{
-				Cos{Mul{Var{"x"}, Var{"y"}}},
+				Cos{newPoly(ptype{"xy": 1})},
 				Var{"y"},
 			},
 		},
@@ -108,30 +109,30 @@ func TestPartialDerive(t *testing.T) {
 			Mul{
 				Num{-15.},
 				Mul{
-					Pow{Cos{Mul{Var{"x"}, Var{"y"}}}, 2.},
-					Mul{Sin{Mul{Var{"x"}, Var{"y"}}}, Var{"y"}},
+					Pow{Cos{newPoly(ptype{"xy": 1})}, 2.},
+					Mul{Sin{newPoly(ptype{"xy": 1})}, Var{"y"}},
 				},
 			},
 		},
 	}
-	
+
 	for _, tt := range table {
 		raw := PartialDerive(tt.variable, tt.function)
 		d := makePoly(Simplify(raw))
 
 		if !reflect.DeepEqual(d, tt.derivative) {
-			t.Errorf("\nPartialDerive Error %v wrt %v\n",
-				tt.description, tt.variable)
-			t.Errorf("\nPresimplified output: %v\n",
+			x := fmt.Sprintf("\nPartialDerive Error\n %v wrt %v\n", tt.description, tt.variable)
+			y := fmt.Sprintf("\nPresimplified output: %v\n",
 				Read(raw))
-			t.Errorf("got  %v\nwant %v\n",
+			z := fmt.Sprintf("got  %v\nwant %v\n\n",
 				Read(d),
-				Read(tt.derivative),
-			)
+				Read(tt.derivative))
+
+			t.Errorf(x + y + z)
+
 		}
 	}
 }
-
 
 func TestSimplify(t *testing.T) {
 	type ptype map[string]float64
@@ -146,7 +147,7 @@ func TestSimplify(t *testing.T) {
 		},
 		{"5+ (6*cos(x) * 0)",
 			Add{Num{5.}, Mul{Num{6.}, Mul{Cos{Var{"x"}}, Num{0.}}}},
-			newPoly(ptype{"": 5.}),
+			Num{5.},
 		},
 		{"con(c + 2)",
 			con{Add{Var{"c"}, Num{2.}}},
@@ -171,10 +172,14 @@ func TestSimplify(t *testing.T) {
 		},
 		{"((3*-1)*(100*10))",
 			Mul{Mul{Num{3.}, Num{-1.}}, Mul{Num{100.}, Num{10.}}},
-			newPoly(ptype{"": -3000}),
+			Num{-3000},
+		},
+		{"-1 * -1 * Cos(x)",
+			Mul{Num{-1.}, Mul{Num{-1}, Cos{Var{"x"}}}},
+			Cos{Var{"x"}},
 		},
 	}
-	
+
 	for _, tt := range table {
 		if got := makePoly(Simplify(tt.f)); !reflect.DeepEqual(got, tt.simplified) {
 			t.Errorf("\nSimplify Error %v\n", tt.description)
@@ -188,14 +193,14 @@ func TestSimplify(t *testing.T) {
 
 /*
 * Polynomial TESTS
-*/
- 
+ */
+
 func TestPolyAdd(t *testing.T) {
 	type ptype map[string]float64
 	table := []struct {
 		p1, p2 map[string]float64
 		sum    map[string]float64
-        }{
+	}{
 		{
 			ptype{"": 4., "x^2y^5": 3.5, "x": 2.},
 			ptype{"x": 1.},
@@ -218,7 +223,7 @@ func TestPolyAdd(t *testing.T) {
 			ptype{"x": 2},
 		},
 	}
-	
+
 	for _, tt := range table {
 		got := add(newPoly(tt.p1), newPoly(tt.p2))
 		want := newPoly(tt.sum)
@@ -231,7 +236,7 @@ func TestPolyAdd(t *testing.T) {
 	}
 }
 
-func TestPolyMul(t *testing.T){
+func TestPolyMul(t *testing.T) {
 	type ptype map[string]float64
 	table := []struct {
 		p1, p2  map[string]float64
@@ -258,7 +263,7 @@ func TestPolyMul(t *testing.T){
 			ptype{"": -1, "x^2": 1, "y^2": -1, "y": -2.},
 		},
 	}
-	
+
 	for _, tt := range table {
 		got := mul(newPoly(tt.p1), newPoly(tt.p2))
 		want := newPoly(tt.product)
@@ -268,4 +273,14 @@ func TestPolyMul(t *testing.T){
 				tt.p1, tt.p2, want, got)
 		}
 	}
+}
+
+func TestFunctionsOne(t *testing.T) {
+	expr := Add{Mul{Num{5.}, Var{"z"}}, Num{6.}}
+	f := Function{expr, []Expression{Var{"z"}}}
+	r := Apply(f, Num{2.})
+	if !reflect.DeepEqual(r, Num{16.}) {
+		t.Errorf("Want %v got %v", 16, r)
+	}
+
 }
