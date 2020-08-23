@@ -62,6 +62,120 @@ type Poly struct {
 	terms map[string]float64
 }
 
+// f(a(x,y), b(x,y))
+// expression -> func multi to 1
+//
+// A Function returns len(E) arguments.
+// its input arity depends on the input
+// arity of its individual expression trees,
+// which is undefined.
+
+type Function struct {
+	E1   Expression
+	Vars []Expression
+}
+
+// Generic expression parsing routine
+// do stuff, recurse, do more stuff.
+type replaceOrHalt func(Expression) (Expression, bool)
+type replacer func(Expression) Expression
+
+func GenericParse(before replaceOrHalt, after replacer, e Expression) Expression {
+
+	f := func(e1 Expression) Expression {
+		return GenericParse(before, after, e1)
+	}
+
+	// Preprocess the node
+	e, ok := before(e)
+	if !ok {
+		return e
+	}
+
+	// recursive descent
+	switch v := e.(type) {
+	case con:
+		// don't do further processing
+		// just strip constant symbols
+		e = f(v.E1)
+	case Cos:
+		e = Cos{f(v.E1)}
+	case Num:
+		// terminal
+	case Var:
+		// terminal
+	case Poly:
+		// terminal
+	case Sin:
+		e = Sin{f(v.E1)}
+	case Pow:
+		e = Pow{f(v.Base), v.Exponent}
+	case Div:
+		e = Div{f(v.E1), f(v.E2)}
+	case Mul:
+		e = Mul{f(v.E1), f(v.E2)}
+	case Add:
+		e = Add{f(v.E1), f(v.E2)}
+	default:
+		panic("Tried to reach undefined type in tree")
+	}
+
+	// as recursion is winding up,
+	// post-processing on node
+	return after(e)
+}
+
+// ForwardSub finds all occurences of find with expression.
+// Here, find better be an atomic token or it
+// panics. TODO: fix that up
+func ForwardSub(e, find, replace Expression) Expression {
+	f := func(e Expression) Expression {
+		return ForwardSub(e, find, replace)
+	}
+
+	// Attempt replacement
+	if reflect.DeepEqual(e, find) {
+		return replace
+	}
+
+	// What to do about polynomials?
+	//
+
+	// recursive descent
+	switch v := e.(type) {
+	case con:
+		// don't do further processing
+		// just strip constant symbols
+		return f(v.E1)
+	case Cos:
+		return Cos{f(v.E1)}
+	case Num:
+		return e
+	case Var:
+		return e
+	case Sin:
+		return Sin{f(v.E1)}
+	case Pow:
+		return Pow{f(v.Base), v.Exponent}
+	case Div:
+		return Div{f(v.E1), f(v.E2)}
+	case Mul:
+		return Mul{f(v.E1), f(v.E2)}
+	case Add:
+		return Add{f(v.E1), f(v.E2)}
+	default:
+		panic("Tried to reach undefined type in tree")
+	}
+
+}
+
+func Apply(f Function, e Expression) Expression {
+	if len(f.Vars) == 0 {
+		return f
+	}
+	return Simplify(ForwardSub(f.E1, f.Vars[0], e))
+}
+
 // Simplify monomial products
 // e.g xxy^2zx - > x^3y^2z
 func reduce(s string) string {
@@ -133,6 +247,14 @@ func newPoly(m map[string]float64) Poly {
 
 func almostEqual(a, b float64) bool {
 	return math.Abs(a-b) < .0000000001
+}
+
+func isTypeEqualToFloat(a interface{}, b float64) bool {
+	n, ok := a.(Num)
+	if !ok {
+		return false
+	}
+	return math.Abs(n.Val-b) < .0000000001
 }
 
 func mul(p1, p2 Poly) Poly {
@@ -208,62 +330,39 @@ func Simplify(e Expression) Expression {
 
 // makePoly attempts to rearrange expression terms as polynomials
 func makePoly(e Expression) Expression {
-	// Given an expression, try making a poly out of it
-	tryPoly := func(e Expression) Expression {
+	tryPoly := func(e Expression) (Expression, bool) {
 		switch v := e.(type) {
+		case Poly:
+			return e, true
 		case Var:
-			return newPoly(map[string]float64{v.Name: 1.})
+			return newPoly(map[string]float64{v.Name: 1.}), true
 		case Num:
-			return newPoly(map[string]float64{"": v.Val})
+			return newPoly(map[string]float64{"": v.Val}), true
+		}
+		return e, false
+	}
+	before := func(ex Expression) (Expression, bool) {
+		return ex, true
+	}
+	after := func(e Expression) Expression {
+		switch v := e.(type) {
+		case Mul:
+			a, ok1 := tryPoly(v.E1)
+			b, ok2 := tryPoly(v.E2)
+			if ok1 && ok2 {
+				return mul(a.(Poly), b.(Poly))
+			}
+		case Add:
+			a, ok1 := tryPoly(v.E1)
+			b, ok2 := tryPoly(v.E2)
+			if ok1 && ok2 {
+				return add(a.(Poly), b.(Poly))
+			}
 		}
 		return e
 	}
-	tryPoly = tryPoly
 
-	var a, b Expression
-	switch v := e.(type) {
-	case con:
-		// don't do further processing
-		// just strip constant symbols
-		return makePoly(v.E1)
-	case Cos:
-		return Cos{makePoly(v.E1)}
-	case Sin:
-		return Sin{makePoly(v.E1)}
-	case Pow:
-		return Pow{makePoly(v.Base), v.Exponent}
-	case Div:
-		return Div{makePoly(v.E1), makePoly(v.E2)}
-	case Num:
-		return tryPoly(v)
-	case Var:
-		return tryPoly(v)
-	case Poly:
-		return v
-	case Mul:
-		a = tryPoly(makePoly(v.E1))
-		b = tryPoly(makePoly(v.E2))
-	case Add:
-		a = tryPoly(makePoly(v.E1))
-		b = tryPoly(makePoly(v.E2))
-	}
-
-	_, ok1 := a.(Poly)
-	_, ok2 := b.(Poly)
-
-	switch e.(type) {
-	case Mul:
-		if ok1 && ok2 {
-			return mul(a.(Poly), b.(Poly))
-		}
-	case Add:
-		if ok1 && ok2 {
-			return add(a.(Poly), b.(Poly))
-		}
-
-	}
-
-	return e
+	return GenericParse(before, after, e)
 }
 
 // Simplify expressions
@@ -293,6 +392,31 @@ func simplify(e Expression) Expression {
 		a = simplify(v.E1)
 		b = simplify(v.E2)
 		e = Add{a, b}
+	}
+
+	aIs0 := isTypeEqualToFloat(a, 0)
+	bIs0 := isTypeEqualToFloat(b, 0)
+	aIs1 := isTypeEqualToFloat(a, 1)
+	bIs1 := isTypeEqualToFloat(b, 1)
+
+	switch e.(type) {
+	case Mul:
+		if aIs0 || bIs0 {
+			return Num{0.}
+		}
+		if aIs1 {
+			return b
+		}
+		if bIs1 {
+			return a
+		}
+	case Add:
+		if aIs0 {
+			return b
+		}
+		if bIs0 {
+			return a
+		}
 	}
 
 	// Clean up chains of Adds
@@ -419,71 +543,68 @@ func simplify(e Expression) Expression {
 // mark all subtrees that don't involve
 // the variable as constant
 func markTreesConstant(va Var, e Expression) Expression {
+
 	checkCon := func(exp Expression) bool {
 		if _, ok := exp.(con); ok {
 			return true
 		}
 		return false
 	}
-	switch v := e.(type) {
-	case Num:
-		return con{v}
-	case Var:
-		if !reflect.DeepEqual(va, v) {
-			return con{v}
+
+	// node preprocessing of terminals
+	before := func(e Expression) (Expression, bool) {
+		switch v := e.(type) {
+		case Num:
+			return con{v}, false
+		case Var:
+			if !reflect.DeepEqual(va, v) {
+				return con{v}, false
+			}
+		case con:
+			return v, false
 		}
-		return v
-	case Cos:
-		c := markTreesConstant(va, v.E1)
-		if checkCon(c) {
-			return con{Cos{c}}
-		}
-		return Cos{c}
-	case Sin:
-		c := markTreesConstant(va, v.E1)
-		if checkCon(c) {
-			return con{Sin{c}}
-		}
-		return Sin{c}
-	case Pow:
-		c := markTreesConstant(va, v.Base)
-		if checkCon(c) {
-			return con{Pow{c, v.Exponent}}
-		}
-		return Pow{c, v.Exponent}
-	case Mul:
-		a := markTreesConstant(va, v.E1)
-		b := markTreesConstant(va, v.E2)
-		if checkCon(a) && checkCon(b) {
-			return con{Mul{a, b}}
-		}
-		return Mul{a, b}
-	case Div:
-		a := markTreesConstant(va, v.E1)
-		b := markTreesConstant(va, v.E2)
-		if checkCon(a) && checkCon(b) {
-			return con{Div{a, b}}
-		}
-		return Div{a, b}
-	case Add:
-		// if either summand not constant
-		// then add isn't constant
-		a := markTreesConstant(va, v.E1)
-		b := markTreesConstant(va, v.E2)
-		if checkCon(a) && checkCon(b) {
-			return con{Add{a, b}}
-		}
-		return Add{a, b}
-	default:
-		fmt.Printf("default")
-		return v
+		return e, true
 	}
+
+	// recurse to bottom
+
+	after := func(e Expression) Expression {
+
+		// after recursion
+		switch v := e.(type) {
+		case Cos:
+			if checkCon(v.E1) {
+				return con{e}
+			}
+		case Sin:
+			if checkCon(v.E1) {
+				return con{e}
+			}
+		case Pow:
+			if checkCon(v.Base) {
+				return con{e}
+			}
+		case Mul:
+			if checkCon(v.E1) && checkCon(v.E2) {
+				return con{e}
+			}
+		case Div:
+			if checkCon(v.E1) && checkCon(v.E2) {
+				return con{e}
+			}
+		case Add:
+			if checkCon(v.E1) && checkCon(v.E2) {
+				return con{e}
+			}
+		}
+		return e
+	}
+	return GenericParse(before, after, e)
+
 }
 
-// Partial differentiation is normal
-// differentiation, but first you mark
-// all sub-expressions that don't involve
-// the variable you're differentiating
+//ressions that don't involve
+//// the veriable you're differentiating
 // with respect to as constant
 func PartialDerive(va Var, e Expression) Expression {
 	return Derive(markTreesConstant(va, e))
@@ -513,6 +634,7 @@ func Derive(e Expression) Expression {
 		// panic("undefined derivative")
 		return exp
 	}
+	// before recurse
 
 	// chain rule, product rule, quotient rule
 	switch v := e.(type) {
@@ -539,6 +661,7 @@ func Derive(e Expression) Expression {
 				v.E2,
 			},
 		}
+
 	// quotient rule
 	case Div:
 		return Div{
@@ -551,6 +674,5 @@ func Derive(e Expression) Expression {
 			Derive(v.E2),
 		}
 	}
-	fmt.Printf("Why did I get here? %v\n", e)
-	panic(fmt.Sprintf("missed a case of type %v", Read(e)))
+	return e
 }
