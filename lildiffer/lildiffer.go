@@ -72,7 +72,7 @@ type Poly struct {
 
 type Function struct {
 	E1   Expression
-	Vars []Expression
+	Vars []Var
 }
 
 // Generic expression parsing routine
@@ -128,9 +128,9 @@ func GenericParse(before replaceOrHalt, after replacer, e Expression) Expression
 // ForwardSub finds all occurences of find with expression.
 // Here, find better be an atomic token or it
 // panics. TODO: fix that up
-func ForwardSub(e, find, replace Expression) Expression {
+func ForwardSub(e, replace Expression, find Var) Expression {
 	f := func(e Expression) Expression {
-		return ForwardSub(e, find, replace)
+		return ForwardSub(e, replace, find)
 	}
 
 	// Attempt replacement
@@ -139,7 +139,9 @@ func ForwardSub(e, find, replace Expression) Expression {
 	}
 
 	// What to do about polynomials?
-	//
+	if v, ok := e.(Poly); ok {
+		return substitute(v, find, replace)
+	}
 
 	// recursive descent
 	switch v := e.(type) {
@@ -153,6 +155,8 @@ func ForwardSub(e, find, replace Expression) Expression {
 		return e
 	case Var:
 		return e
+	case Poly:
+		return e
 	case Sin:
 		return Sin{f(v.E1)}
 	case Pow:
@@ -164,7 +168,7 @@ func ForwardSub(e, find, replace Expression) Expression {
 	case Add:
 		return Add{f(v.E1), f(v.E2)}
 	default:
-		panic("Tried to reach undefined type in tree")
+		panic("fsub tried to reach undefined type in tree")
 	}
 
 }
@@ -173,15 +177,10 @@ func Apply(f Function, e Expression) Expression {
 	if len(f.Vars) == 0 {
 		return f
 	}
-	return Simplify(ForwardSub(f.E1, f.Vars[0], e))
+	return Simplify(ForwardSub(f.E1, e, f.Vars[0]))
 }
 
-// Simplify monomial products
-// e.g xxy^2zx - > x^3y^2z
-func reduce(s string) string {
-	if len(s) == 0 {
-		return ""
-	}
+func decomposePoly(s string) ([]string, []int) {
 
 	var monomials []string
 	var exponents []int
@@ -203,8 +202,12 @@ func reduce(s string) string {
 		}
 		exponents = append(exponents, i)
 	}
+	return monomials, exponents
+}
 
-	// Now get rid of repeats, multiply
+func makePolyTerm(monomials []string, exponents []int) string {
+
+	// Get rid of repeats, multiply
 	m := make(map[string]int)
 	for i, st := range monomials {
 		if val, ok := m[st]; ok {
@@ -230,6 +233,18 @@ func reduce(s string) string {
 			ret += fmt.Sprintf("%v^%v", key, v)
 		}
 	}
+	return ret
+}
+
+// Simplify monomial products
+// e.g xxy^2zx - > x^3y^2z
+func reduce(s string) string {
+	if len(s) == 0 {
+		return ""
+	}
+
+	monomials, exponents := decomposePoly(s)
+	ret := makePolyTerm(monomials, exponents)
 	return ret
 }
 
@@ -289,6 +304,50 @@ func add(p1, p2 Poly) Poly {
 		}
 	}
 	return p2
+}
+
+// substitute subs all occurrences of
+// v Var in poly with e
+func substitute(p Poly, v Var, e Expression) Expression {
+
+	var summands []Expression
+	// Careful iteration isn't ordered
+	var keys []string
+	for term := range p.terms {
+		keys = append(keys, term)
+	}
+	sort.Strings(keys)
+
+	for _, term := range keys {
+		coef := p.terms[term]
+		monomials, exponents := decomposePoly(term)
+		for i, s := range monomials {
+			if s == v.Name {
+				exp := exponents[i]
+				// Remove the monomial from the term
+				monomials = append(monomials[:i], monomials[i+1:]...)
+				exponents = append(exponents[:i], exponents[i+1:]...)
+				key := makePolyTerm(monomials, exponents)
+				p := newPoly(map[string]float64{key: coef})
+				//fmt.Printf("%v=\n", Read(e))
+				t := Mul{Pow{e, float64(exp)}, p}
+				summands = append(summands, t)
+			}
+		}
+	}
+	if len(summands) == 0 {
+		return p
+	}
+	if len(summands) == 1 {
+		return summands[0]
+	}
+	ret := Add{summands[0], summands[1]}
+
+	for i := 2; i < len(summands); i++ {
+		ret = Add{ret, summands[i]}
+	}
+
+	return ret
 }
 
 // Converts expression to a string
