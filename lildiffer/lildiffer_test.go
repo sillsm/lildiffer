@@ -276,11 +276,24 @@ func TestPolyMul(t *testing.T) {
 }
 
 func TestFunctionsOne(t *testing.T) {
+	type ptype map[string]float64
+
 	expr := Add{Mul{Num{5.}, Var{"z"}}, Num{6.}}
-	f := Function{expr, []Expression{Var{"z"}}}
+	f := Function{expr, []Var{Var{"z"}}}
 	r := Apply(f, Num{2.})
 	if !reflect.DeepEqual(r, Num{16.}) {
-		t.Errorf("Want %v got %v", 16, r)
+		t.Errorf("Want %v got %v", 15, r)
+	}
+
+	p := newPoly(ptype{"x^2y^111z^3": 1, "y^2nmz^2": 1})
+	f = Function{p, []Var{Var{"y"}}}
+	r = Apply(f, Sin{Var{"x"}})
+	x := Var{"x"}
+	want := Add{
+		Mul{Pow{Sin{x}, 2.}, newPoly(ptype{"mnz^2": 1})},
+		Mul{Pow{Sin{x}, 111.}, newPoly(ptype{"x^2z^3": 1})}}
+	if !reflect.DeepEqual(r, want) {
+		t.Errorf("Want %v \ngot %v, \non input %v ", Read(want), Read(r), Read(p))
 	}
 
 }
